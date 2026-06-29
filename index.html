@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel LED</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+    <main class="mx-auto flex min-h-screen w-full max-w-5xl items-center justify-center p-4 sm:p-6">
+        <section
+            class="w-full max-w-[560px] rounded-2xl border border-slate-700/70 bg-slate-900/80 p-4 shadow-2xl shadow-black/40 backdrop-blur sm:p-5">
+            <div id="panel"
+                class="relative mx-auto w-full max-w-[450px] overflow-hidden rounded-lg border-2 border-slate-800 bg-black/90 aspect-[3/1]">
+                <canvas id="ledCanvas" class="absolute inset-0 h-full w-full"></canvas>
+            </div>
+
+            <div class="mt-4 grid gap-2">
+                <input type="text" id="textInput" value="Hello World!" maxlength="60" placeholder="Type here..."
+                    class="w-full text-center rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-600/30">
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const panel = document.getElementById('panel');
+        const canvas = document.getElementById('ledCanvas');
+        const ctx = canvas.getContext('2d');
+        const textInput = document.getElementById('textInput');
+
+        const hiddenCanvas = document.createElement('canvas');
+        const hCtx = hiddenCanvas.getContext('2d');
+
+        const rows = 22;
+        let cols = 60;
+        let ledRadius = 1;
+        let scrollX = cols;
+        const speed = .45;
+        const alphaThreshold = 95;
+        const charSpacing = 2;
+
+        textInput.addEventListener('input', () => scrollX = cols);
+
+        const getLitRowBounds = (imageData, width, height, threshold = 100) => {
+            let minRow = height;
+            let maxRow = -1;
+
+            for (let r = 0; r < height; r++) {
+                for (let c = 0; c < width; c++) {
+                    const alpha = imageData.data[(r * width + c) * 4 + 3];
+                    if (alpha > threshold) {
+                        if (r < minRow) minRow = r;
+                        if (r > maxRow) maxRow = r;
+                    }
+                }
+            }
+
+            if (maxRow < minRow) {
+                return null;
+            }
+
+            return { minRow, maxRow };
+        };
+
+        const measureSpacedText = (context, text, spacing) => {
+            if (!text || text.length === 0) {
+                return 0;
+            }
+
+            let width = 0;
+            for (let i = 0; i < text.length; i++) {
+                width += context.measureText(text[i]).width;
+                if (i < text.length - 1) {
+                    width += spacing;
+                }
+            }
+            return width;
+        };
+
+        const drawSpacedText = (context, text, anchorX, y, spacing, align = 'left') => {
+            if (!text || text.length === 0) {
+                return 0;
+            }
+
+            const totalWidth = measureSpacedText(context, text, spacing);
+            let x = anchorX;
+
+            if (align === 'center') {
+                x = anchorX - (totalWidth / 2);
+            }
+
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                context.fillText(ch, x, y);
+                x += context.measureText(ch).width + spacing;
+            }
+
+            return totalWidth;
+        };
+
+        const resizeMatrix = () => {
+            const dpr = window.devicePixelRatio || 1;
+            const cssWidth = Math.max(1, panel.clientWidth);
+            const cssHeight = Math.max(1, panel.clientHeight);
+
+            canvas.width = Math.floor(cssWidth * dpr);
+            canvas.height = Math.floor(cssHeight * dpr);
+
+            const aspect = cssWidth / cssHeight;
+            cols = Math.min(220, Math.max(96, Math.floor(rows * aspect * 1.5)));
+
+            hiddenCanvas.width = cols;
+            hiddenCanvas.height = rows;
+
+            ledRadius = Math.max(0.8, Math.min(canvas.width / cols, canvas.height / rows) * 0.26);
+            scrollX = cols;
+        };
+
+        const drawLEDMatrix = () => {
+            ctx.fillStyle = '#050505';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            hCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+
+            hCtx.fillStyle = '#ffffff';
+            hCtx.textBaseline = 'alphabetic';
+            hCtx.textAlign = 'left';
+
+            const message = (textInput.value || '').toUpperCase();
+            if (!message) {
+                hCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            } else {
+                let fontSize = Math.max(10, Math.floor(rows * 0.76));
+                let textWidth = 0;
+                let ascent = 0;
+                let descent = 0;
+                let scrollMode = false;
+                let bounds = null;
+
+                // Find a font size that remains readable and allows symmetric row centering.
+                while (fontSize >= 8) {
+                    hCtx.font = `700 ${fontSize}px "Arial Black", "Arial", "Helvetica Neue", sans-serif`;
+                    const probeMetrics = hCtx.measureText(message);
+                    textWidth = measureSpacedText(hCtx, message, charSpacing);
+                    ascent = probeMetrics.actualBoundingBoxAscent || fontSize * 0.73;
+                    descent = probeMetrics.actualBoundingBoxDescent || fontSize * 0.27;
+
+                    const baselineProbeY = ((rows - (ascent + descent)) / 2) + ascent;
+                    hCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+                    drawSpacedText(hCtx, message, cols / 2, baselineProbeY, charSpacing, 'center');
+
+                    const probeData = hCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+                    bounds = getLitRowBounds(probeData, hiddenCanvas.width, hiddenCanvas.height, alphaThreshold);
+
+                    if (!bounds) {
+                        break;
+                    }
+
+                    const litHeight = bounds.maxRow - bounds.minRow + 1;
+                    scrollMode = textWidth > cols * 0.9;
+
+                    const parityMatch = (litHeight % 2) === (rows % 2);
+                    const heightFits = litHeight <= rows - 2;
+
+                    if (parityMatch && heightFits) {
+                        break;
+                    }
+
+                    fontSize -= 1;
+                }
+
+                const drawAlign = scrollMode ? 'left' : 'center';
+                let drawX = cols / 2;
+                if (scrollMode) {
+                    drawX = scrollX;
+                    scrollX -= speed;
+                    if (scrollX < -textWidth - 3) {
+                        scrollX = cols + 3;
+                    }
+                } else {
+                    scrollX = cols;
+                }
+
+                const baselineY = ((rows - (ascent + descent)) / 2) + ascent;
+                hCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+                drawSpacedText(hCtx, message, drawX, baselineY, charSpacing, drawAlign);
+
+                const firstPass = hCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+                bounds = getLitRowBounds(firstPass, hiddenCanvas.width, hiddenCanvas.height, alphaThreshold);
+
+                if (bounds) {
+                    const currentHeight = bounds.maxRow - bounds.minRow + 1;
+                    const targetTop = Math.floor((rows - currentHeight) / 2);
+                    const shiftY = targetTop - bounds.minRow;
+
+                    if (shiftY !== 0) {
+                        hCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+                        drawSpacedText(hCtx, message, drawX, baselineY + shiftY, charSpacing, drawAlign);
+                    }
+                }
+            }
+
+            const imgData = hCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            const stepX = canvas.width / cols;
+            const stepY = canvas.height / rows;
+
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const pixelIndex = (r * hiddenCanvas.width + c) * 4;
+                    const alpha = imgData.data[pixelIndex + 3];
+
+                    const ledX = (c + 0.5) * stepX;
+                    const ledY = (r + 0.5) * stepY;
+
+                    ctx.beginPath();
+                    ctx.arc(ledX, ledY, ledRadius, 0, Math.PI * 2);
+
+                    if (alpha > alphaThreshold) {
+                        ctx.fillStyle = '#ff2f2f';
+                        ctx.fill();
+                    } else {
+                        ctx.fillStyle = '#1e293b';
+                        ctx.fill();
+                    }
+                }
+            }
+
+            requestAnimationFrame(drawLEDMatrix);
+        };
+
+        resizeMatrix();
+        new ResizeObserver(resizeMatrix).observe(panel);
+        drawLEDMatrix();
+    </script>
+</body>
+
+</html>
